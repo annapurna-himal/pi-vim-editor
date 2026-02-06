@@ -123,11 +123,7 @@ class VimEditor extends CustomEditor {
 
 	constructor(tui: TUI, theme: any, keybindings: any) {
 		super(tui, theme, keybindings);
-		// Enable hardware cursor so DECSCUSR shape changes are visible
-		// (Pi's TUI hides the hardware cursor by default, rendering a software
-		// cursor via reverse video instead. We strip that and use the real one.)
-		this.tui.setShowHardwareCursor(true);
-		// Set initial cursor shape
+		// Set initial cursor shape (DECSCUSR — bonus for terminals that show hardware cursor)
 		this.setCursorShape("normal");
 		// Restore any recovered buffer content
 		const recovered = loadRecoveryBuffer();
@@ -1467,16 +1463,19 @@ class VimEditor extends CustomEditor {
 		const lines = super.render(width);
 		if (lines.length === 0) return lines;
 
-		// Strip the software cursor (reverse video block) from rendered output.
-		// The base Editor renders the cursor as \x1b[7m<char>\x1b[0m. We remove
-		// the reverse video escapes (keeping the character) so the hardware cursor
-		// (whose shape we control via DECSCUSR) is the only visible cursor.
-		// The CURSOR_MARKER is preserved for the TUI to position the hardware cursor.
-		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].includes("\x1b[7m")) {
-				lines[i] = lines[i].replace(/\x1b\[7m([\s\S]+?)\x1b\[0m/, "$1");
+		// Restyle the software cursor per vim mode.
+		// The base Editor always renders a reverse-video block: \x1b[7m<char>\x1b[0m.
+		// We replace it with mode-appropriate styling so the cursor visually changes.
+		if (this.mode === "insert") {
+			// Insert mode: underline on the character (thin line under char)
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].includes("\x1b[7m")) {
+					lines[i] = lines[i].replace(/\x1b\[7m([\s\S]+?)\x1b\[0m/, "\x1b[4m$1\x1b[24m");
+					break;
+				}
 			}
 		}
+		// Normal/visual/command: keep the reverse-video block cursor as-is
 
 		// Build mode label
 		let label: string;
@@ -1552,14 +1551,10 @@ function clamp(v: number, lo: number, hi: number): number {
 
 export default function (pi: ExtensionAPI) {
 	let vimEnabled = true;
-	let activeTui: TUI | null = null;
 
 	pi.on("session_start", (_event, ctx) => {
 		if (!ctx.hasUI || !vimEnabled) return;
-		ctx.ui.setEditorComponent((tui, theme, kb) => {
-			activeTui = tui;
-			return new VimEditor(tui, theme, kb);
-		});
+		ctx.ui.setEditorComponent((tui, theme, kb) => new VimEditor(tui, theme, kb));
 		ctx.ui.setStatus("vim", "\x1b[1;44;97m VIM \x1b[0m");
 	});
 
@@ -1567,17 +1562,13 @@ export default function (pi: ExtensionAPI) {
 		// Restore terminal cursor to default on shutdown
 		// Write directly to stdout since we may not have UI context
 		process.stdout.write(CURSOR.default);
-		if (activeTui) activeTui.setShowHardwareCursor(false);
 	});
 
 	pi.registerCommand("vim", {
 		description: "Enable vim mode",
 		handler: async (_args, ctx) => {
 			vimEnabled = true;
-			ctx.ui.setEditorComponent((tui, theme, kb) => {
-				activeTui = tui;
-				return new VimEditor(tui, theme, kb);
-			});
+			ctx.ui.setEditorComponent((tui, theme, kb) => new VimEditor(tui, theme, kb));
 			ctx.ui.setStatus("vim", "\x1b[1;44;97m VIM \x1b[0m");
 			ctx.ui.notify("Vim mode enabled", "info");
 		},
@@ -1591,9 +1582,6 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("vim", undefined);
 			// Restore cursor shape to terminal default
 			process.stdout.write(CURSOR.default);
-			// Re-hide hardware cursor — default editor uses software (reverse video) cursor
-			if (activeTui) activeTui.setShowHardwareCursor(false);
-			activeTui = null;
 			ctx.ui.notify("Default editor restored", "info");
 		},
 	});
