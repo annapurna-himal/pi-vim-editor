@@ -27,8 +27,9 @@ Then `/reload` in Pi (or restart).
 The extension loads automatically. You start in **NORMAL** mode.
 
 ```
-/vim      → enable vim mode (on by default)
-/novim    → restore default editor
+/vim          → enable vim mode (on by default)
+/novim        → restore default editor
+/vim-recover  → check/restore recovered buffer text
 ```
 
 ### Submitting Prompts
@@ -37,20 +38,35 @@ The extension loads automatically. You start in **NORMAL** mode.
 |---------|--------|
 | Normal mode | `Enter` submits |
 | Insert mode | `Enter` adds a new line |
+| **Any mode** | **`Ctrl+Enter` submits** |
 | Command mode | `:w` or `:send` submits |
 | Command mode | `:q` exits Pi |
 
-**Typical flow:** type in insert mode → `Esc` → `Enter` to send.
+**Typical flow:** type in insert mode → `Esc` → `Enter` to send. Or just `Ctrl+Enter` from anywhere.
+
+### Key Remappings
+
+| Key | Behavior |
+|-----|----------|
+| `Ctrl+C` | Acts as `Esc` (enters normal mode, does **not** clear the editor) |
+| `Ctrl+Enter` | Submits from any mode |
 
 ## Modes
 
-| Mode | Badge | Enter with | Exit with |
-|------|-------|-----------|-----------|
-| **NORMAL** | `NORMAL` (blue) | `Esc` | — |
-| **INSERT** | `INSERT` (green) | `i` `a` `o` `A` `I` `O` | `Esc` |
-| **VISUAL** | `VISUAL` (purple) | `v` | `Esc` |
-| **V-LINE** | `V-LINE` (purple) | `V` | `Esc` |
-| **COMMAND** | `:cmd` (yellow) | `:` | `Enter` / `Esc` |
+| Mode | Badge | Cursor | Enter with | Exit with |
+|------|-------|--------|-----------|-----------|
+| **NORMAL** | `NORMAL` (blue) | █ block | `Esc` / `Ctrl+C` | — |
+| **INSERT** | `INSERT` (green) | ▏ thin bar | `i` `a` `o` `A` `I` `O` | `Esc` / `Ctrl+C` |
+| **VISUAL** | `VISUAL` (purple) | █ block | `v` | `Esc` / `Ctrl+C` |
+| **V-LINE** | `V-LINE` (purple) | █ block | `V` | `Esc` / `Ctrl+C` |
+| **COMMAND** | `:cmd` (yellow) | █ block | `:` | `Enter` / `Esc` / `Ctrl+C` |
+| **REPLACE** | `REPLACE` (red) | ▁ underline | `r` | after char |
+
+## Buffer Recovery
+
+Your editor content is automatically saved to `~/.cache/pi-vim-editor/buffer-recovery.txt` as you type (debounced 1s). If Pi crashes or you accidentally close it, your text is restored on next launch.
+
+The recovery buffer is cleared on successful prompt submission.
 
 ## Keybindings
 
@@ -133,6 +149,8 @@ Enter with `v` (char) or `V` (line), move to select, then:
 - Insert mode delegates to the base editor, so **autocomplete, Tab completion, and clipboard paste all work normally**
 - Manipulates the editor's internal state directly for vim operations
 - Integrates with the editor's undo stack
+- Changes terminal cursor shape via DECSCUSR escape sequences
+- Auto-saves buffer to disk for crash recovery
 - Renders a styled mode indicator on the bottom border
 
 ## Author

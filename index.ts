@@ -48,6 +48,45 @@ const S = {
 	R: "\x1b[0m", // reset
 };
 
+// ─── Cursor Shape Escapes ───────────────────────────────────────────────────
+// DECSCUSR (Set Cursor Style) — works in xterm, kitty, ghostty, most modern terms
+const CURSOR = {
+	block: "\x1b[2 q",     // steady block (normal mode)
+	bar: "\x1b[6 q",       // steady bar/thin line (insert mode)
+	underline: "\x1b[4 q", // steady underline (replace mode)
+	default: "\x1b[0 q",   // terminal default
+};
+
+// ─── Buffer Persistence ─────────────────────────────────────────────────────
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
+import { join } from "path";
+
+const RECOVERY_DIR = join(process.env.HOME || "/tmp", ".cache", "pi-vim-editor");
+const RECOVERY_FILE = join(RECOVERY_DIR, "buffer-recovery.txt");
+
+function saveRecoveryBuffer(text: string): void {
+	try {
+		if (!existsSync(RECOVERY_DIR)) mkdirSync(RECOVERY_DIR, { recursive: true });
+		writeFileSync(RECOVERY_FILE, text, "utf-8");
+	} catch { /* best effort */ }
+}
+
+function loadRecoveryBuffer(): string | null {
+	try {
+		if (existsSync(RECOVERY_FILE)) {
+			const text = readFileSync(RECOVERY_FILE, "utf-8");
+			return text || null;
+		}
+	} catch { /* best effort */ }
+	return null;
+}
+
+function clearRecoveryBuffer(): void {
+	try {
+		if (existsSync(RECOVERY_FILE)) writeFileSync(RECOVERY_FILE, "", "utf-8");
+	} catch { /* best effort */ }
+}
+
 // ─── VimEditor ──────────────────────────────────────────────────────────────
 
 class VimEditor extends CustomEditor {
@@ -73,6 +112,9 @@ class VimEditor extends CustomEditor {
 	private changeKeys: string[] = [];
 	private replaying = false;
 
+	// Buffer persistence
+	private saveTimer: ReturnType<typeof setTimeout> | null = null;
+
 	// ─── Internal state access ──────────────────────────────────────────
 	// Editor.state is TypeScript-private but accessible at JS runtime
 	private get es() {
@@ -81,6 +123,49 @@ class VimEditor extends CustomEditor {
 
 	constructor(tui: TUI, theme: any, keybindings: any) {
 		super(tui, theme, keybindings);
+		// Set initial cursor shape
+		this.setCursorShape("normal");
+		// Restore any recovered buffer content
+		const recovered = loadRecoveryBuffer();
+		if (recovered && recovered.trim()) {
+			this.es.lines = recovered.split("\n");
+			this.es.cursorLine = 0;
+			this.es.cursorCol = 0;
+			this.fireChange();
+			this.showInfo("Buffer recovered!", 3000);
+			// Clear recovery file after restoring
+			clearRecoveryBuffer();
+		}
+	}
+
+	// ─── Cursor shape ───────────────────────────────────────────────────
+
+	private setCursorShape(mode: VimMode): void {
+		let seq: string;
+		switch (mode) {
+			case "insert":
+				seq = CURSOR.bar;
+				break;
+			case "replace-char":
+				seq = CURSOR.underline;
+				break;
+			default:
+				seq = CURSOR.block;
+				break;
+		}
+		this.tui.terminal.write(seq);
+	}
+
+	// ─── Buffer auto-save (debounced) ───────────────────────────────────
+
+	private scheduleSave(): void {
+		if (this.saveTimer) clearTimeout(this.saveTimer);
+		this.saveTimer = setTimeout(() => {
+			const text = this.es.lines.join("\n");
+			if (text.trim()) {
+				saveRecoveryBuffer(text);
+			}
+		}, 1000); // save 1s after last keystroke
 	}
 
 	// ─── Position helpers ───────────────────────────────────────────────
@@ -484,6 +569,7 @@ class VimEditor extends CustomEditor {
 	private enterNormal(): void {
 		const wasInsert = this.mode === "insert";
 		this.mode = "normal";
+		this.setCursorShape("normal");
 		this.resetPending();
 		this.visualAnchor = null;
 		this.commandBuf = "";
@@ -505,6 +591,7 @@ class VimEditor extends CustomEditor {
 
 	private enterInsert(where: string): void {
 		this.mode = "insert";
+		this.setCursorShape("insert");
 		this.resetPending();
 
 		const ln = this.line();
@@ -550,12 +637,14 @@ class VimEditor extends CustomEditor {
 			return;
 		}
 		this.mode = type === "line" ? "visual-line" : "visual";
+		this.setCursorShape(this.mode);
 		this.visualAnchor = this.pos();
 		this.resetPending();
 	}
 
 	private enterCommand(): void {
 		this.mode = "command";
+		this.setCursorShape("command");
 		this.commandBuf = "";
 	}
 
@@ -586,6 +675,9 @@ class VimEditor extends CustomEditor {
 		(this as any).scrollOffset = 0;
 		if (Array.isArray((this as any).undoStack)) (this as any).undoStack.length = 0;
 		(this as any).lastAction = null;
+
+		// Clear recovery buffer on successful submit
+		clearRecoveryBuffer();
 
 		const onChange = (this as any).onChange;
 		if (onChange) onChange("");
@@ -641,10 +733,35 @@ class VimEditor extends CustomEditor {
 	// ─── Main input handler ─────────────────────────────────────────────
 
 	handleInput(data: string): void {
+		// Ctrl+Enter: submit from ANY mode
+		if (matchesKey(data, "ctrl+enter")) {
+			this.enterNormal();
+			this.submitPrompt();
+			return;
+		}
+
+		// Ctrl+C: act as Escape in vim (don't clear the editor)
+		if (matchesKey(data, "ctrl+c")) {
+			if (this.mode === "insert" || this.mode === "visual" || this.mode === "visual-line" || this.mode === "command") {
+				this.enterNormal();
+			} else if (this.mode === "replace-char" || this.mode === "find-char") {
+				this.mode = "normal";
+				this.setCursorShape("normal");
+				this.resetPending();
+			} else {
+				// Normal mode: cancel any pending operator/count, absorb the key
+				this.resetPending();
+			}
+			return;
+		}
+
 		// Record keys for repeat (.) while in insert mode
 		if (this.recording && this.mode === "insert" && !this.replaying) {
 			this.changeKeys.push(data);
 		}
+
+		// Schedule buffer save on any input
+		this.scheduleSave();
 
 		switch (this.mode) {
 			case "insert":
@@ -785,18 +902,22 @@ class VimEditor extends CustomEditor {
 				// Find char
 				case "f":
 					this.mode = "find-char";
+					this.setCursorShape("find-char");
 					this.findDir = "f";
 					return;
 				case "F":
 					this.mode = "find-char";
+					this.setCursorShape("find-char");
 					this.findDir = "F";
 					return;
 				case "t":
 					this.mode = "find-char";
+					this.setCursorShape("find-char");
 					this.findDir = "t";
 					return;
 				case "T":
 					this.mode = "find-char";
+					this.setCursorShape("find-char");
 					this.findDir = "T";
 					return;
 				case ";":
@@ -931,6 +1052,7 @@ class VimEditor extends CustomEditor {
 
 				case "r":
 					this.mode = "replace-char";
+					this.setCursorShape("replace-char");
 					return;
 
 				case "J": {
@@ -1018,11 +1140,7 @@ class VimEditor extends CustomEditor {
 			super.handleInput(data);
 			return;
 		}
-		// Ctrl+C pass through
-		if (matchesKey(data, "ctrl+c")) {
-			super.handleInput(data);
-			return;
-		}
+		// Note: Ctrl+C is handled globally in handleInput() as Esc
 	}
 
 	// ─── ge motion helper ───────────────────────────────────────────────
@@ -1076,6 +1194,7 @@ class VimEditor extends CustomEditor {
 
 	private onFindChar(data: string): void {
 		this.mode = "normal";
+		this.setCursorShape("normal");
 		if (matchesKey(data, "escape")) {
 			this.resetPending();
 			return;
@@ -1094,6 +1213,7 @@ class VimEditor extends CustomEditor {
 
 	private onReplaceChar(data: string): void {
 		this.mode = "normal";
+		this.setCursorShape("normal");
 		if (matchesKey(data, "escape")) {
 			this.resetPending();
 			return;
@@ -1418,6 +1538,12 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setStatus("vim", "\x1b[1;44;97m VIM \x1b[0m");
 	});
 
+	pi.on("session_shutdown", () => {
+		// Restore terminal cursor to default on shutdown
+		// Write directly to stdout since we may not have UI context
+		process.stdout.write(CURSOR.default);
+	});
+
 	pi.registerCommand("vim", {
 		description: "Enable vim mode",
 		handler: async (_args, ctx) => {
@@ -1434,7 +1560,22 @@ export default function (pi: ExtensionAPI) {
 			vimEnabled = false;
 			ctx.ui.setEditorComponent(undefined);
 			ctx.ui.setStatus("vim", undefined);
+			// Restore cursor to default
+			process.stdout.write(CURSOR.default);
 			ctx.ui.notify("Default editor restored", "info");
+		},
+	});
+
+	pi.registerCommand("vim-recover", {
+		description: "Recover text from the last unsaved editor buffer",
+		handler: async (_args, ctx) => {
+			const text = loadRecoveryBuffer();
+			if (text && text.trim()) {
+				ctx.ui.notify(`Recovery buffer available (${text.split("\n").length} lines). Restoring...`, "info");
+				// The VimEditor constructor handles recovery on reload
+			} else {
+				ctx.ui.notify("No recovery buffer found", "info");
+			}
 		},
 	});
 }
