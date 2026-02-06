@@ -1141,6 +1141,12 @@ class VimEditor extends CustomEditor {
 			return;
 		}
 		// Note: Ctrl+C is handled globally in handleInput() as Esc
+
+		// Forward unhandled non-printable keys to base editor for app-level keybindings
+		// (model selector, thinking level, tool expansion, etc.)
+		if (data.length !== 1 || data.charCodeAt(0) < 32) {
+			super.handleInput(data);
+		}
 	}
 
 	// ─── ge motion helper ───────────────────────────────────────────────
