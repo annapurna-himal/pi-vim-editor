@@ -1,6 +1,6 @@
 # pi-vim-editor
 
-A vim-like modal editor extension for [Pi](https://github.com/badlogic/pi-mono), the coding agent by [@badlogic](https://github.com/badlogic).
+A vim-like modal editor extension for [Pi](https://github.com/badlogic/pi-mono).
 
 Replaces Pi's default Emacs-flavored text input with proper vim modal editing.
 
@@ -160,3 +160,5 @@ Built by [Annapurna](https://github.com/annapurna-himal) 🏔️
 ## License
 
 MIT
+
+## Part of [Himal](https://github.com/Aklaran/himal) 🏔️
